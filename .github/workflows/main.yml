@@ -24,11 +24,66 @@ jobs:
           SENDER: ${{ secrets.SENDER }}
           RECEIVER: ${{ secrets.RECEIVER }}
           SENDER_PASSWORD: ${{ secrets.SENDER_PASSWORD }}
+          SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_API_BASE: ${{ secrets.OPENAI_API_BASE }}
-          CUSTOM_CONFIG: ${{ vars.CUSTOM_CONFIG }}
+          MODEL_NAME: ${{ secrets.MODEL_NAME }}
+          MAX_PAPER_NUM: ${{ secrets.MAX_PAPER_NUM }}
+          SEND_EMPTY: ${{ secrets.SEND_EMPTY }}
+          ARXIV_QUERY: ${{ secrets.ARXIV_QUERY }}
         run: |
-          printf "%b\n" "$CUSTOM_CONFIG" > config/custom.yaml
-          echo "Use custom config: "
-          cat config/custom.yaml
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          query = os.environ.get("ARXIV_QUERY", "").strip()
+          if not query:
+              raise SystemExit("ARXIV_QUERY secret is required.")
+
+          categories = [part.strip() for part in query.replace(",", "+").split("+") if part.strip()]
+          if not categories:
+              raise SystemExit("ARXIV_QUERY secret did not contain any arXiv categories.")
+
+          send_empty_raw = os.environ.get("SEND_EMPTY", "").strip().lower()
+          send_empty = "true" if send_empty_raw in {"1", "true", "yes", "y", "on"} else "false"
+          max_paper_num_raw = os.environ.get("MAX_PAPER_NUM", "").strip() or "100"
+          try:
+              max_paper_num = int(max_paper_num_raw)
+          except ValueError as exc:
+              raise SystemExit("MAX_PAPER_NUM secret must be an integer.") from exc
+
+          dollar = "$"
+          Path("config/custom.yaml").write_text(f"""zotero:
+            user_id: {dollar}{{oc.env:ZOTERO_ID}}
+            api_key: {dollar}{{oc.env:ZOTERO_KEY}}
+            include_path: null
+
+          email:
+            sender: {dollar}{{oc.env:SENDER}}
+            receiver: {dollar}{{oc.env:RECEIVER}}
+            smtp_server: {dollar}{{oc.env:SMTP_SERVER}}
+            smtp_port: {dollar}{{oc.decode:{dollar}{{oc.env:SMTP_PORT}}}}
+            sender_password: {dollar}{{oc.env:SENDER_PASSWORD}}
+
+          llm:
+            api:
+              key: {dollar}{{oc.env:OPENAI_API_KEY}}
+              base_url: {dollar}{{oc.env:OPENAI_API_BASE}}
+            generation_kwargs:
+              model: {dollar}{{oc.env:MODEL_NAME}}
+
+          source:
+            arxiv:
+              category: {json.dumps(categories)}
+
+          executor:
+            debug: false
+            send_empty: {send_empty}
+            max_paper_num: {max_paper_num}
+            source: ["arxiv"]
+          """)
+          PY
+          echo "Generated config/custom.yaml from existing repository secrets."
           uv run src/zotero_arxiv_daily/main.py
